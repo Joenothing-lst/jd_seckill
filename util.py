@@ -10,6 +10,8 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.image import MIMEImage
 
 from config import global_config
+from jd_logger import logger
+
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 6.1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/41.0.2228.0 Safari/537.36",
@@ -145,30 +147,35 @@ class Email():
             smtpObj.login(mail_user, mail_pwd)
             self.is_login = True
         except Exception as e:
-            # change to logger
-            print(f'邮箱登录失败: {e}')
+            logger.info('邮箱登录失败!', e)
         self.smtpObj = smtpObj
 
-    def send(self, title, msg, receivers: list, img_path=''):
+    def send(self, title, msg, receivers: list, img=''):
+        """
+        发送smtp邮件至收件人
+        :param title:
+        :param msg: 如果发送图片，需在msg内嵌入<img src='cid:xxx'>，xxx为图片名
+        :param receivers:
+        :param img: 图片名
+        :return:
+        """
         if self.is_login:
             message = MIMEMultipart('alternative')
             msg_html = MIMEText(msg, 'html', 'utf-8')
             message.attach(msg_html)
             message['Subject'] = title
             message['From'] = self.mail_user
-            if img_path:
-                with open(img_path, "rb") as f:
+            if img:
+                with open(img, "rb") as f:
                     msg_img = MIMEImage(f.read())
-                msg_img.add_header('Content-ID', img_path)
+                msg_img.add_header('Content-ID', img)
                 message.attach(msg_img)
             try:
                 self.smtpObj.sendmail(self.mail_user, receivers, message.as_string())
             except Exception as e:
-                # change to logger
-                print(e)
+                logger.info('邮件发送失败!', e)
         else:
-            # change to logger
-            print('邮箱未登录')
+            logger.info('邮箱未登录')
 
 email = Email(
     mail_host=global_config.getRaw('messenger', 'email_host'),

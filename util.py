@@ -177,6 +177,7 @@ class Email():
         else:
             logger.info('邮箱未登录')
 
+
 email = Email(
     mail_host=global_config.getRaw('messenger', 'email_host'),
     mail_user=global_config.getRaw('messenger', 'email_user'),

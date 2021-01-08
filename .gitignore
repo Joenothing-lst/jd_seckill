@@ -117,6 +117,7 @@ logs/
 test/
 cookies/
 *.cookies
+*.ini
 qr_code.png
 
 # jupyter

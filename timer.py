@@ -9,7 +9,7 @@ from config import global_config
 
 
 class Timer(object):
-    def __init__(self, sleep_interval=0.5):
+    def __init__(self, sleep_interval=0.3):
         # '2018-09-28 22:45:50.000'
         self.buy_time = datetime.strptime(global_config.getRaw('config','buy_time'), "%Y-%m-%d %H:%M:%S.%f")
         self.buy_time_ms = int(time.mktime(self.buy_time.timetuple()) * 1000.0 + self.buy_time.microsecond / 1000)
@@ -41,13 +41,15 @@ class Timer(object):
         """
         return self.local_time() - self.jd_time()
 
-    def start(self):
-        logger.info('正在等待到达设定时间:{}，检测本地时间与京东服务器时间误差为【{}】毫秒'.format(self.buy_time, self.diff_time))
-        while True:
+    @property
+    def status(self):
+        # while True:
             # 本地时间减去与京东的时间差，能够将时间误差提升到0.1秒附近
             # 具体精度依赖获取京东服务器时间的网络时间损耗
-            if self.local_time() - self.diff_time >= self.buy_time_ms:
-                logger.info('时间到达，开始执行……')
-                break
-            else:
-                time.sleep(self.sleep_interval)
+        if self.buy_time_ms + 180000 >= self.local_time() - self.diff_time >= self.buy_time_ms:
+            return 'start'
+        elif self.buy_time_ms + 180000 < self.local_time() - self.diff_time:
+            return 'over'
+        else:
+            return 'waiting'
+

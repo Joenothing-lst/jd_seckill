@@ -5,6 +5,7 @@ import functools
 import json
 import os
 import pickle
+import httpx
 
 from lxml import etree
 from jd_logger import logger
@@ -19,7 +20,9 @@ from util import (
     response_status,
     save_image,
     open_image,
+    add_bg_for_qr,
     email
+
 )
 
 
@@ -35,6 +38,11 @@ class SpiderSession:
 
     def _init_session(self):
         session = requests.session()
+        session.headers = self.get_headers()
+        return session
+
+    def _init_httpx_session(self):
+        session = httpx.Client()
         session.headers = self.get_headers()
         return session
 
@@ -161,7 +169,7 @@ class QrLogin:
         url = 'https://qr.m.jd.com/show'
         payload = {
             'appid': 133,
-            'size': 147,
+            'size': 300,
             't': str(int(time.time() * 1000)),
         }
         headers = {
@@ -173,13 +181,12 @@ class QrLogin:
         if not response_status(resp):
             logger.info('获取二维码失败')
             return False
-
         save_image(resp, self.qrcode_img_file)
         logger.info('二维码获取成功，请打开京东APP扫描')
-        open_image(self.qrcode_img_file)
+
+        open_image(add_bg_for_qr(self.qrcode_img_file))
         if global_config.getRaw('messenger', 'email_enable') == 'true':
             email.send('二维码获取成功，请打开京东APP扫描', "<img src='cid:qr_code.png'>", [email.mail_user], 'qr_code.png')
-
         return True
 
     def _get_qrcode_ticket(self):
@@ -354,15 +361,28 @@ class JdSeckill(object):
         """
         抢购
         """
+        logger.info('正在等待到达设定时间:{}，还有{}秒，检测本地时间与京东服务器时间误差为【{}】毫秒'.format(self.timers.buy_time, (self.timers.buy_time_ms-self.timers.local_time())/1000, self.timers.diff_time))
+        logger.info('用户:{}'.format(self.get_username()))
+        logger.info('商品名称:{}'.format(self.get_sku_title()))
         while True:
-            try:
-                self.request_seckill_url()
-                while True:
-                    self.request_seckill_checkout_page()
-                    self.submit_seckill_order()
-            except Exception as e:
-                logger.info('抢购发生异常，稍后继续执行！', e)
-            wait_some_time()
+            now_status = self.timers.status
+            if now_status == 'start':
+                logger.info('时间到达，开始执行……')
+
+                try:
+                    self.request_seckill_url()
+                    while True:
+                        self.request_seckill_checkout_page()
+                        self.submit_seckill_order()
+                except Exception as e:
+                    logger.info('抢购发生异常，稍后继续执行！', e)
+                wait_some_time()
+
+            elif now_status == 'waiting':
+                time.sleep(self.timers.sleep_interval)
+            else:   # now_status == 'over'
+                logger.info('抢购结束')
+                break
 
     def make_reserve(self):
         """商品预约"""
@@ -380,14 +400,14 @@ class JdSeckill(object):
         resp = self.session.get(url=url, params=payload, headers=headers)
         resp_json = parse_json(resp.text)
         reserve_url = resp_json.get('url')
-        self.timers.start()
+        # self.timers.start()
         while True:
             try:
                 self.session.get(url='https:' + reserve_url)
                 logger.info('预约成功，已获得抢购资格 / 您已成功预约过了，无需重复预约')
-                if global_config.getRaw('messenger', 'enable') == 'true':
-                    success_message = "预约成功，已获得抢购资格 / 您已成功预约过了，无需重复预约"
-                    send_wechat(success_message)
+                # if global_config.getRaw('messenger', 'enable') == 'true':
+                #     success_message = "预约成功，已获得抢购资格 / 您已成功预约过了，无需重复预约"
+                    # send_wechat(success_message)
                 break
             except Exception as e:
                 logger.error('预约失败正在重试...')
@@ -462,10 +482,10 @@ class JdSeckill(object):
 
     def request_seckill_url(self):
         """访问商品的抢购链接（用于设置cookie等"""
-        logger.info('用户:{}'.format(self.get_username()))
-        logger.info('商品名称:{}'.format(self.get_sku_title()))
-        self.timers.start()
-        self.seckill_url[self.sku_id] = self.get_seckill_url()
+
+        # self.timers.start()
+        if not self.seckill_url.get(self.sku_id):
+            self.seckill_url[self.sku_id] = self.get_seckill_url()
         logger.info('访问商品的抢购连接...')
         headers = {
             'User-Agent': self.user_agent,
@@ -508,6 +528,8 @@ class JdSeckill(object):
         headers = {
             'User-Agent': self.user_agent,
             'Host': 'marathon.jd.com',
+            'referer': 'https://marathon.jd.com/seckill/seckill.action?skuId={0}&num={1}&rid={2}'.format(
+                self.sku_id, self.seckill_num, int(time.time())),
         }
         resp = self.session.post(url=url, data=data, headers=headers)
 
@@ -515,7 +537,7 @@ class JdSeckill(object):
         try:
             resp_json = parse_json(resp.text)
         except Exception:
-            raise SKException('抢购失败，返回信息:{}'.format(resp.text[0: 128]))
+            raise SKException('获取秒杀初始化信息失败，返回信息:{}'.format(resp.text[0: 128]))
 
         return resp_json
 
@@ -576,11 +598,12 @@ class JdSeckill(object):
         payload = {
             'skuId': self.sku_id,
         }
-        try:
-            self.seckill_order_data[self.sku_id] = self._get_seckill_order_data()
-        except Exception as e:
-            logger.info('抢购失败，无法获取生成订单的基本信息，接口返回:【{}】'.format(str(e)))
-            return False
+        if not self.seckill_order_data.get(self.sku_id):
+            try:
+                self.seckill_order_data[self.sku_id] = self._get_seckill_order_data()
+            except Exception as e:
+                logger.info('抢购失败，无法获取生成订单的基本信息，接口返回:【{}】'.format(str(e)))
+                return False
 
         logger.info('提交抢购订单...')
         headers = {
@@ -589,17 +612,16 @@ class JdSeckill(object):
             'Referer': 'https://marathon.jd.com/seckill/seckill.action?skuId={0}&num={1}&rid={2}'.format(
                 self.sku_id, self.seckill_num, int(time.time())),
         }
-        resp = self.session.post(
-            url=url,
-            params=payload,
-            data=self.seckill_order_data.get(
-                self.sku_id),
-            headers=headers)
-        resp_json = None
         try:
+            resp = self.session.post(
+                url=url,
+                params=payload,
+                data=self.seckill_order_data.get(
+                    self.sku_id),
+                headers=headers)
             resp_json = parse_json(resp.text)
         except Exception as e:
-            logger.info('抢购失败，返回信息:{}'.format(resp.text[0: 128]))
+            logger.info('抢购失败，返回信息:{}'.format(e))
             return False
         # 返回信息
         # 抢购失败：
@@ -619,7 +641,7 @@ class JdSeckill(object):
             return True
         else:
             logger.info('抢购失败，返回信息:{}'.format(resp_json))
-            if global_config.getRaw('messenger', 'enable') == 'true':
-                error_message = '抢购失败，返回信息:{}'.format(resp_json)
-                send_wechat(error_message)
+            # if global_config.getRaw('messenger', 'enable') == 'true':
+            #     error_message = '抢购失败，返回信息:{}'.format(resp_json)
+            #     send_wechat(error_message)
             return False
